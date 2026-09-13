@@ -5,7 +5,7 @@ using OSVersionExtension;
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text.Json;
+using System.Runtime.Serialization;
 
 namespace Ink_Canvas
 {
@@ -665,8 +665,18 @@ namespace Ink_Canvas
         Extended = 2
     }
 
+    public enum StartupMode
+    {
+        Default = 0,
+        Faster = 1,
+        Fastest = 2
+    }
+
     public class Startup
     {
+        private StartupMode _startupMode = StartupMode.Default;
+        private bool _hasExplicitStartupMode;
+
         [JsonProperty("isAutoUpdate")]
         public bool IsAutoUpdate { get; set; } = true;
         [JsonProperty("isAutoUpdateWithSilence")]
@@ -689,8 +699,18 @@ namespace Ink_Canvas
         public bool IsEnableNibMode { get; set; }
         [JsonProperty("isFoldAtStartup")]
         public bool IsFoldAtStartup { get; set; }
-        [JsonProperty("enableFastStartup")]
-        public bool EnableFastStartup { get; set; }
+        [JsonProperty("startupMode")]
+        public StartupMode StartupMode
+        {
+            get => _startupMode;
+            set
+            {
+                _startupMode = Enum.IsDefined(typeof(StartupMode), value) ? value : StartupMode.Default;
+                _hasExplicitStartupMode = true;
+            }
+        }
+        [JsonProperty("enableFastStartup", NullValueHandling = NullValueHandling.Ignore)]
+        private bool? LegacyEnableFastStartup { get; set; }
         [JsonProperty("crashAction")]
         public int CrashAction { get; set; } = 2;
         [JsonProperty("telemetryUploadLevel")]
@@ -701,6 +721,17 @@ namespace Ink_Canvas
         public bool HasShownOobe { get; set; } = false;
         [JsonProperty("enableWindowChromeRendering")]
         public bool EnableWindowChromeRendering { get; set; } = false;
+
+        [OnDeserialized]
+        private void OnDeserialized(StreamingContext context)
+        {
+            if (!_hasExplicitStartupMode && LegacyEnableFastStartup.HasValue)
+            {
+                _startupMode = LegacyEnableFastStartup.Value ? StartupMode.Fastest : StartupMode.Faster;
+            }
+
+            LegacyEnableFastStartup = null;
+        }
     }
 
     public enum TrayClickAction
@@ -1357,6 +1388,15 @@ namespace Ink_Canvas
 
         [JsonProperty("isSaveScreenshotsInDateFolders")]
         public bool IsSaveScreenshotsInDateFolders { get; set; }
+
+        [JsonProperty("screenshotSaveFormat")]
+        public int ScreenshotSaveFormat { get; set; } = 0;
+
+        [JsonProperty("screenshotJpegQuality")]
+        public long ScreenshotJpegQuality { get; set; } = 90;
+
+        [JsonProperty("screenshotScaleMode")]
+        public int ScreenshotScaleMode { get; set; } = 0;
 
         [JsonProperty("isAutoSaveStrokesAtScreenshot")]
         public bool IsAutoSaveStrokesAtScreenshot { get; set; }

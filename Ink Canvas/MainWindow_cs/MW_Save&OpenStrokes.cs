@@ -239,14 +239,10 @@ namespace Ink_Canvas
                 element.Arrange(new Rect(new System.Windows.Point(0, 0), size));
                 element.UpdateLayout();
                 element.InvalidateVisual();
-                LogHelper.WriteLogToFile($"[SecAgentDiag] RESTORE_LAYOUT type={element.GetType().Name} " +
-                    $"actual=({element.ActualWidth:0.##}x{element.ActualHeight:0.##}) " +
-                    $"size=({element.Width:0.##}x{element.Height:0.##}) " +
-                    $"visible={element.Visibility} hit={element.IsHitTestVisible}", LogHelper.LogType.Info);
             }
-            catch (Exception ex)
+            catch
             {
-                LogHelper.WriteLogToFile($"[SecAgentDiag] RESTORE_LAYOUT_FAILED type={element.GetType().FullName} error={ex}", LogHelper.LogType.Error);
+                // Layout refresh is best-effort while restoring plugin elements.
             }
         }
 
@@ -630,6 +626,7 @@ namespace Ink_Canvas
                         // 单页面XML保存
                         string xmlPath = Path.ChangeExtension(savePathWithName, ".xml");
                         SaveStrokesAsXML(inkCanvas.Strokes, xmlPath);
+                        SavePluginPageDocumentSidecar(xmlPath, CurrentWhiteboardIndex);
                         if (newNotice)
                         {
                             Task.Delay(100).ContinueWith(t =>
@@ -763,13 +760,14 @@ namespace Ink_Canvas
                         for (int i = 0; i < allPageStrokes.Count; i++)
                         {
                             var strokes = allPageStrokes[i];
-                            if (strokes.Count > 0)
+                            if (strokes.Count > 0 || HasPluginPageState(i + 1))
                             {
                                 string pageFileName = Path.Combine(basePath, $"{baseFileName}_Page-{i + 1}.icstk");
                                 using (var fs = new FileStream(pageFileName, FileMode.Create))
                                 {
                                     strokes.Save(fs);
                                 }
+                                SavePluginPageDocumentSidecar(pageFileName, i + 1);
 
                                 // 异步上传每个icstk文件
                                 _ = Task.Run(async () =>
@@ -804,6 +802,7 @@ namespace Ink_Canvas
                             // 保存为XML格式
                             string xmlPath = Path.ChangeExtension(savePathWithName, ".xml");
                             SaveStrokesAsXML(inkCanvas.Strokes, xmlPath);
+                            SavePluginPageDocumentSidecar(xmlPath, CurrentWhiteboardIndex);
                             if (newNotice)
                             {
                                 Task.Delay(100).ContinueWith(t =>
@@ -837,6 +836,7 @@ namespace Ink_Canvas
                                 try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { }
                                 throw;
                             }
+                            SavePluginPageDocumentSidecar(savePathWithName, CurrentWhiteboardIndex);
                             if (newNotice)
                             {
                                 Task.Delay(100).ContinueWith(t =>
@@ -973,7 +973,7 @@ namespace Ink_Canvas
                     for (int i = 0; i < allPageStrokes.Count; i++)
                     {
                         var strokes = allPageStrokes[i];
-                        if (strokes.Count > 0)
+                        if (strokes.Count > 0 || HasPluginPageState(i + 1))
                         {
                             // 保存XML文件（临时文件，不触发上传）
                             string xmlFileName = Path.Combine(tempDir, $"page_{i + 1:D4}.xml");
@@ -1011,6 +1011,7 @@ namespace Ink_Canvas
                     if (File.Exists(zipFileName))
                         File.Delete(zipFileName);
 
+                    SavePluginDocumentStateToDirectory(tempDir);
                     ZipFile.CreateFromDirectory(tempDir, zipFileName);
 
                     // 异步上传ZIP文件到Dlass
@@ -1074,7 +1075,7 @@ namespace Ink_Canvas
                     for (int i = 0; i < allPageStrokes.Count; i++)
                     {
                         var strokes = allPageStrokes[i];
-                        if (strokes.Count > 0)
+                        if (strokes.Count > 0 || HasPluginPageState(i + 1))
                         {
                             // 保存墨迹文件
                             string strokeFileName = Path.Combine(tempDir, $"page_{i + 1:D4}.icstk");
@@ -1122,6 +1123,7 @@ namespace Ink_Canvas
                         File.Delete(zipFileName);
 
                     // 使用System.IO.Compression.FileSystem来创建ZIP
+                    SavePluginDocumentStateToDirectory(tempDir);
                     ZipFile.CreateFromDirectory(tempDir, zipFileName);
 
                     // 异步上传ZIP文件到Dlass
@@ -1668,6 +1670,7 @@ namespace Ink_Canvas
                     TimeMachineHistories[pair.Key] = pair.Value;
 
                 // 恢复第一页的墨迹
+                LoadPluginDocumentStateFromDirectory(tempDir);
                 if (TimeMachineHistories[1] != null)
                 {
                     RestoreStrokes();
@@ -1730,6 +1733,7 @@ namespace Ink_Canvas
                 timeMachine.ClearStrokeHistory();
                 inkCanvas.Strokes.Add(strokes);
                 LogHelper.NewLog($"XML Strokes Insert: Strokes Count: {inkCanvas.Strokes.Count}");
+                LoadPluginPageDocumentSidecar(filePath);
 
                 // 恢复元素信息
                 var elementsFile = Path.ChangeExtension(filePath, ".elements.json");
@@ -1900,6 +1904,8 @@ namespace Ink_Canvas
                     LogHelper.NewLog($"Strokes Insert: Strokes Count: {inkCanvas.Strokes.Count.ToString()}");
                 }
             }
+
+            LoadPluginPageDocumentSidecar(filePath);
 
             // 恢复元素信息
             var elementsFile = Path.ChangeExtension(filePath, ".elements.json");

@@ -1384,10 +1384,6 @@ namespace Ink_Canvas
             var inkCanvas1 = sender as InkCanvas;
             if (inkCanvas1 == null) return;
 
-            SecAgentDiag($"MODE_CHANGED mode={inkCanvas1.EditingMode} overlay=" +
-                         $"{(FindName("EraserOverlayCanvas") as System.Windows.Controls.Canvas)?.IsHitTestVisible}/" +
-                         $"{(FindName("EraserOverlayCanvas") as System.Windows.Controls.Canvas)?.Visibility} {SecAgentDiagCanvasState()}");
-
             NotifyPluginPenModeChanged(inkCanvas1.EditingMode);
 
             if (IsCurrentPageFrozen && IsFreezeMutatingMode(inkCanvas1.EditingMode))
@@ -1457,6 +1453,15 @@ namespace Ink_Canvas
             FloatingBarThemeService.ApplySavedTheme();
         }
 
+        /// <summary>
+        /// 应用或移除彩色浮动栏背景（蓝绿半透明渐变），供 SettingsActionHub 切换开关时实时调用。
+        /// </summary>
+        internal void ApplyColorfulFloatingBar()
+        {
+            FloatingBarThemeService ??= new FloatingBarThemeService(this);
+            FloatingBarThemeService.ApplyColorfulOverlay();
+        }
+
         public void UpdateInkSmoothingConfig()
         {
             _inkSmoothingManager?.UpdateConfig();
@@ -1509,16 +1514,16 @@ namespace Ink_Canvas
             // 工具栏插件化按钮先注入到容器，确保 LoadSettings 内部对 Cursor_Icon / Pen_Icon 等的访问非空。
             // Settings.Toolbar 此时尚为默认值（全部可见），与旧 XAML 行为一致。
             InitializeToolbarPlugins();
-            // 初始化 Popup 管理器（置顶 + 拖动跟随）。快速启动模式下延迟到首帧之后。
-            if (!App.IsFastStartupEnabled)
+            // 初始化 Popup 管理器（置顶 + 拖动跟随）。最快模式下延迟到首帧之后。
+            if (!App.IsFastestStartupMode)
             {
                 InitializePopupManager();
             }
             // 加载设置
             LoadSettings(true);
-            // 启动性能监测（如果已启用）。快速启动模式下延迟到首帧之后。
+            // 启动性能监测（如果已启用）。最快模式下延迟到首帧之后。
             // 实时笔迹详细调试日志独立于性能监测，由 Debug 页开关控制，默认关闭。
-            if (!App.IsFastStartupEnabled)
+            if (!App.IsFastestStartupMode)
             {
                 PerformanceMonitorHelper.StartIfEnabled();
                 RealtimeInkPerformanceMonitor.StartIfEnabled();
@@ -1530,6 +1535,12 @@ namespace Ink_Canvas
             {
                 if (IsInPPTPresentationMode) ViewboxFloatingBarMarginAnimation(60, skipAnimation: true);
                 else ViewboxFloatingBarMarginAnimation(100, true, skipAnimation: true);
+            }
+
+            // 默认模式沿用 1.7.19.4：通知与自动化在 Window_Loaded 中初始化。
+            if (App.IsDefaultStartupMode)
+            {
+                InitializeNotificationAndAutomationForStartup();
             }
 
             // 启动时根据设置恢复调试控制台显示状态
@@ -1553,7 +1564,8 @@ namespace Ink_Canvas
                     SetTheme("Dark");
                     break;
                 case 2: // 跟随系统
-                    if (ThemeHelper.IsSystemThemeLight())
+                    _lastFollowedSystemThemeLight = ThemeHelper.IsSystemThemeLight();
+                    if (_lastFollowedSystemThemeLight.Value)
                     {
                         ThemeManager.Current.ApplicationTheme = ApplicationTheme.Light;
                         SetTheme("Light");
@@ -1575,12 +1587,18 @@ namespace Ink_Canvas
             CheckColorTheme(true);
             ApplyFloatingBarTheme();
 
+            // 默认模式沿用 1.7.19.4：RealtimeStylus 与画板工具栏在首屏加载阶段完成。
+            if (App.IsDefaultStartupMode)
+            {
+                InitializeRealtimeAndBoardForStartup();
+            }
+
             BtnWhiteBoardSwitchPrevious.IsEnabled = CurrentWhiteboardIndex != 1;
             BorderInkReplayToolBox.Visibility = Visibility.Collapsed;
 
             // 识别后端预热改为后台低优先级执行，避免启动主线程被 WinRT 初始化拖慢。
-            // 快速启动模式下由第二阶段统一延迟。
-            if (!App.IsFastStartupEnabled && ShapeRecognitionRouter.ShouldRunShapeRecognition(
+            // 最快模式下由第二阶段统一延迟。
+            if (!App.IsFastestStartupMode && ShapeRecognitionRouter.ShouldRunShapeRecognition(
                     Settings.InkToShape.IsInkToShapeEnabled,
                     ShapeRecognitionRouter.FromSettingsInt(Settings.InkToShape.ShapeRecognitionEngine)))
             {
@@ -1929,6 +1947,8 @@ namespace Ink_Canvas
         {
             RealtimeInkFrameScheduler.Clear();
             SystemEvents.DisplaySettingsChanged -= SystemEventsOnDisplaySettingsChanged;
+            SystemEvents.UserPreferenceChanged -= SystemEvents_UserPreferenceChanged;
+            _systemThemeRetryTimer?.Stop();
             // 玻璃浮动栏刻意不设 Owner，必须显式关闭，否则残留窗口会挡住进程退出
             HideLiquidGlassBar();
 
@@ -2374,9 +2394,6 @@ namespace Ink_Canvas
         // 鼠标输入
         private void inkCanvas_PreviewMouseDown(object sender, MouseButtonEventArgs e)
         {
-            SecAgentDiag($"PREVIEW_MOUSE_DOWN button={e.ChangedButton} point={e.GetPosition(inkCanvas)} " +
-                         $"original={e.OriginalSource?.GetType().FullName ?? "null"} mode={inkCanvas?.EditingMode} " +
-                         $"selected={SecAgentDiagElement(currentSelectedElement)}");
             if (e.ChangedButton == MouseButton.Left && inkCanvas.EditingMode == InkCanvasEditingMode.EraseByStroke)
             {
                 if (BeginSecAgentStrokeErase(e.GetPosition(inkCanvas)))
@@ -2423,11 +2440,8 @@ namespace Ink_Canvas
                 }
                 dependencyObject = VisualTreeHelper.GetParent(dependencyObject);
             }
-            SecAgentDiag($"PREVIEW_MOUSE_HIT media={clickedMediaControl} secagent={clickedSecAgentSceneElement} " +
-                         $"original={hitTest?.GetType().FullName ?? "null"}");
             if (!(hitTest is Image) && !(hitTest is MediaElement) && !(hitTest is CanvasMediaControl) && !clickedMediaControl && !clickedSecAgentSceneElement)
             {
-                SecAgentDiag("PREVIEW_MOUSE_BLANK clearing-selection");
                 // 如果当前有选中的元素，取消选中状态
                 if (currentSelectedElement != null)
                 {
@@ -2453,7 +2467,6 @@ namespace Ink_Canvas
 
             if (MoveSecAgentStrokeErase(e.GetPosition(inkCanvas)))
             {
-                SecAgentDiag($"STROKE_ERASER_MOUSE_MOVE point={e.GetPosition(inkCanvas)} erasedScene=true");
                 e.Handled = true;
             }
         }
@@ -2684,28 +2697,8 @@ namespace Ink_Canvas
             _popupManager?.OnOwnerActivated();
         }
 
-        private async Task RunDeferredStartupPhaseBAsync()
+        private void InitializeNotificationAndAutomationForStartup()
         {
-            if (_deferredPhaseBCompleted) return;
-            _deferredPhaseBCompleted = true;
-
-            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ContextIdle);
-            await Task.Delay(App.IsFastStartupEnabled ? 1000 : 600);
-
-            if (App.IsFastStartupEnabled)
-            {
-                try
-                {
-                    InitializePopupManager();
-                    PerformanceMonitorHelper.StartIfEnabled();
-                    RealtimeInkPerformanceMonitor.StartIfEnabled();
-                }
-                catch (Exception ex)
-                {
-                    LogHelper.WriteLogToFile($"[MainWindow] 快速启动延迟基础服务初始化出错: {ex.Message}", LogHelper.LogType.Error);
-                }
-            }
-
             try
             {
                 InitializeNotificationProviders();
@@ -2723,17 +2716,10 @@ namespace Ink_Canvas
             {
                 LogHelper.WriteLogToFile($"[MainWindow] 初始化自动化系统时出错: {ex.Message}", LogHelper.LogType.Error);
             }
+        }
 
-            // 后移的非首屏初始化
-            if (App.IsFastStartupEnabled &&
-                ShapeRecognitionRouter.ShouldRunShapeRecognition(
-                    Settings.InkToShape.IsInkToShapeEnabled,
-                    ShapeRecognitionRouter.FromSettingsInt(Settings.InkToShape.ShapeRecognitionEngine)))
-            {
-                _ = Task.Run(() => InkRecognizeHelper.WarmupShapeRecognition(
-                    ShapeRecognitionRouter.FromSettingsInt(Settings.InkToShape.ShapeRecognitionEngine)));
-            }
-
+        private void InitializeRealtimeAndBoardForStartup()
+        {
             try
             {
                 EnsureRealtimeStylusPipelineBinding();
@@ -2772,6 +2758,52 @@ namespace Ink_Canvas
             catch (Exception ex)
             {
                 LogHelper.WriteLogToFile($"[MainWindow] 黑板工具栏初始化出错: {ex.Message}", LogHelper.LogType.Error);
+            }
+        }
+
+        private async Task RunDeferredStartupPhaseBAsync()
+        {
+            if (_deferredPhaseBCompleted) return;
+            _deferredPhaseBCompleted = true;
+
+            if (!App.IsDefaultStartupMode)
+            {
+                await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ContextIdle);
+            }
+            await Task.Delay(App.IsFastestStartupMode ? 1000 : 600);
+
+            if (App.IsFastestStartupMode)
+            {
+                try
+                {
+                    InitializePopupManager();
+                    PerformanceMonitorHelper.StartIfEnabled();
+                    RealtimeInkPerformanceMonitor.StartIfEnabled();
+                }
+                catch (Exception ex)
+                {
+                    LogHelper.WriteLogToFile($"[MainWindow] 最快启动延迟基础服务初始化出错: {ex.Message}", LogHelper.LogType.Error);
+                }
+            }
+
+            if (!App.IsDefaultStartupMode)
+            {
+                InitializeNotificationAndAutomationForStartup();
+            }
+
+            // 后移的非首屏初始化
+            if (App.IsFastestStartupMode &&
+                ShapeRecognitionRouter.ShouldRunShapeRecognition(
+                    Settings.InkToShape.IsInkToShapeEnabled,
+                    ShapeRecognitionRouter.FromSettingsInt(Settings.InkToShape.ShapeRecognitionEngine)))
+            {
+                _ = Task.Run(() => InkRecognizeHelper.WarmupShapeRecognition(
+                    ShapeRecognitionRouter.FromSettingsInt(Settings.InkToShape.ShapeRecognitionEngine)));
+            }
+
+            if (!App.IsDefaultStartupMode)
+            {
+                InitializeRealtimeAndBoardForStartup();
             }
 
             try
@@ -3587,14 +3619,19 @@ namespace Ink_Canvas
         {
             try
             {
+                // 手动切换主题时基线失效，运行时系统深浅色切换需要重新建立
+                _lastFollowedSystemThemeLight = null;
+
                 switch (themeIndex)
                 {
                     case 0: // 浅色主题
+                        ThemeManager.Current.ApplicationTheme = ApplicationTheme.Light;
                         SetTheme("Light", true);
                         // 浅色主题下设置浮动栏为完全不透明
                         ViewboxFloatingBar.Opacity = 1.0;
                         break;
                     case 1: // 深色主题
+                        ThemeManager.Current.ApplicationTheme = ApplicationTheme.Dark;
                         SetTheme("Dark", true);
                         // 深色主题下设置浮动栏为完全不透明
                         ViewboxFloatingBar.Opacity = 1.0;
@@ -3602,11 +3639,13 @@ namespace Ink_Canvas
                     case 2: // 跟随系统
                         if (ThemeHelper.IsSystemThemeLight())
                         {
+                            ThemeManager.Current.ApplicationTheme = ApplicationTheme.Light;
                             SetTheme("Light", true);
                             ViewboxFloatingBar.Opacity = 1.0;
                         }
                         else
                         {
+                            ThemeManager.Current.ApplicationTheme = ApplicationTheme.Dark;
                             SetTheme("Dark", true);
                             ViewboxFloatingBar.Opacity = 1.0;
                         }
