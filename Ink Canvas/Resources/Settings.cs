@@ -5,6 +5,7 @@ using OSVersionExtension;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.Json;
 
 namespace Ink_Canvas
 {
@@ -54,6 +55,9 @@ namespace Ink_Canvas
 
         [JsonProperty("notification")]
         public NotificationSettings Notification { get; set; } = new NotificationSettings();
+
+        [JsonProperty("timer")]
+        public TimerSettings Timer { get; set; } = new TimerSettings();
 
         [JsonProperty("toolbar")]
         public ToolbarLayoutSettings Toolbar { get; set; } = new ToolbarLayoutSettings();
@@ -297,6 +301,12 @@ namespace Ink_Canvas
 
         [JsonProperty("isDictationDoNotDisturbInWhiteboardEnabled")]
         public bool IsDictationDoNotDisturbInWhiteboardEnabled { get; set; } = true;
+    }
+
+    public class TimerSettings
+    {
+        [JsonProperty("isOpenTransparency")]
+        public bool IsOpenTransparency { get; set; } = true;
     }
 
     public class Security
